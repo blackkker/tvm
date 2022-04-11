@@ -263,6 +263,14 @@ def test_predicate():
     )
     assert len(res) == 0
 
+    # irrelavant predicate
+    res = tvm.arith.detect_iter_map(
+        [i + j],
+        var_dom([(i, 1)]),
+        j <= 24,
+    )
+    assert_iter_sum_pattern(res[0], 1, j)
+
     # constraint on nested fused iters
     res = tvm.arith.detect_iter_map(
         [i * 8 + j * 2 + k],
@@ -625,7 +633,7 @@ def test_subspace_division():
     tvm.ir.assert_structural_equal(res[0][0], j0[0])
     tvm.ir.assert_structural_equal(res[0][1], floordiv(l0[0] * 6 + l1[0], 6))
     tvm.ir.assert_structural_equal(res[1][0], 0)
-    tvm.ir.assert_structural_equal(res[1][1], floormod(floordiv(l0[0] * 6 + l1[0], 3), 2))
+    tvm.ir.assert_structural_equal(res[1][1], floordiv(floormod(l0[0] * 6 + l1[0], 6), 3))
     tvm.ir.assert_structural_equal(res[2][0], 0)
     tvm.ir.assert_structural_equal(res[2][1], (floormod(l0[0] * 6 + l1[0], 3) * 3) + j3[0])
 
