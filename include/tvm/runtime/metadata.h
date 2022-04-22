@@ -33,12 +33,13 @@
 #include <tvm/runtime/c_runtime_api.h>
 #ifdef __cplusplus
 #include <tvm/runtime/metadata_base.h>
-#endif
 #include <tvm/support/span.h>
+#endif
 
 // Version number recorded in emitted artifacts for runtime checking.
 #define TVM_METADATA_VERSION 1
 
+#ifdef __cplusplus
 namespace tvm {
 namespace runtime {
 namespace metadata {
@@ -51,7 +52,6 @@ static const constexpr int64_t kMetadataVersion = TVM_METADATA_VERSION;
 }  // namespace runtime
 }  // namespace tvm
 
-#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -75,6 +75,13 @@ struct TVMMetadata {
   const struct TVMTensorInfo* outputs;
   /*! \brief Number of elements in `outputs` array. */
   int64_t num_outputs;
+  /*! \brief Memory Pools needed by the AOT main function.
+   * The order of the elements is the same as in the arguments to run_model. That is to say,
+   * this array specifies the last `num_pools` arguments to run_model.
+   */
+  const struct TVMTensorInfo* pools;
+  /*! \brief Number of elements in `pools` array. */
+  int64_t num_pools;
   /*! \brief Name of the model, as passed to tvm.relay.build. */
   const char* mod_name;
 };
@@ -109,11 +116,14 @@ class MetadataNode : public MetadataBaseNode {
  public:
   explicit MetadataNode(const struct ::TVMMetadata* data) : data_{data} {}
   static constexpr const char* _type_key = "metadata.MetadataNode";
+  const char* get_c_struct_name() const override;
   inline int64_t version() const { return int64_t(data_->version); }
   inline int64_t num_inputs() const { return data_->num_inputs; }
   ArrayAccessor<struct TVMTensorInfo, TensorInfo> inputs();
   inline int64_t num_outputs() const { return data_->num_outputs; }
   ArrayAccessor<struct TVMTensorInfo, TensorInfo> outputs();
+  inline int64_t num_pools() const { return data_->num_pools; }
+  ArrayAccessor<struct TVMTensorInfo, TensorInfo> pools();
   inline ::tvm::runtime::String mod_name() const { return ::tvm::runtime::String(data_->mod_name); }
   const struct ::TVMMetadata* data() const { return data_; }
   TVM_DECLARE_FINAL_OBJECT_INFO(MetadataNode, MetadataBaseNode);
@@ -132,6 +142,7 @@ class TensorInfoNode : public MetadataBaseNode {
  public:
   explicit TensorInfoNode(const struct ::TVMTensorInfo* data) : data_{data} {}
   static constexpr const char* _type_key = "metadata.TensorInfoNode";
+  const char* get_c_struct_name() const override;
   inline ::tvm::runtime::String name() const { return ::tvm::runtime::String(data_->name); }
   inline int64_t num_shape() const { return data_->num_shape; }
   inline ::tvm::support::Span<const int64_t, int64_t> shape() const {

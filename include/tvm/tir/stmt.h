@@ -388,6 +388,7 @@ class BufferRealize : public Stmt {
                                  Span span = Span());
 
   TVM_DEFINE_NOTNULLABLE_OBJECT_REF_METHODS(BufferRealize, Stmt, BufferRealizeNode);
+  TVM_DEFINE_OBJECT_REF_COW_METHOD(BufferRealizeNode);
 };
 
 /*!
@@ -585,6 +586,7 @@ class Allocate : public Stmt {
                    Span span = Span());
 
   TVM_DEFINE_OBJECT_REF_METHODS(Allocate, Stmt, AllocateNode);
+  TVM_DEFINE_OBJECT_REF_COW_METHOD(AllocateNode);
 };
 
 /*!
@@ -994,12 +996,12 @@ class WhileNode : public StmtNode {
   }
 
   bool SEqualReduce(const WhileNode* other, SEqualReducer equal) const {
-    return equal.DefEqual(condition, other->condition) && equal.DefEqual(body, other->body);
+    return equal(condition, other->condition) && equal(body, other->body);
   }
 
   void SHashReduce(SHashReducer hash_reduce) const {
-    hash_reduce.DefHash(condition);
-    hash_reduce.DefHash(body);
+    hash_reduce(condition);
+    hash_reduce(body);
   }
 
   static constexpr const char* _type_key = "tir.While";
@@ -1372,6 +1374,21 @@ constexpr const char* pragma_tensor_core = "pragma_tensor_core";
  *  run prefetch of Tensor on the current loop scope
  */
 constexpr const char* prefetch_scope = "prefetch_scope";
+/*!
+ * \brief Marks the layout transforms to be used for a tensor.
+ *
+ * Only applies to a DataProducer, as it should be made part of the
+ * PrimFunc attributes for TIR.
+ */
+constexpr const char* layout_transforms = "layout_transforms";
+/*!
+ * \brief Marks the physical axis separators
+ *
+ * Only applies to a DataProducer, as it should be made part of the
+ * Buffer definition in a PrimFunc.  See `BufferNode::axis_separators`
+ * for more details.
+ */
+constexpr const char* axis_separators = "axis_separators";
 /*!
  * \brief Marks production of double buffer data
  */

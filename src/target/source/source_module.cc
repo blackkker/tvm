@@ -23,18 +23,24 @@
  */
 #include "source_module.h"
 
+#include <tvm/runtime/metadata.h>
+#include <tvm/runtime/module.h>
 #include <tvm/runtime/ndarray.h>
 #include <tvm/runtime/packed_func.h>
 #include <tvm/runtime/registry.h>
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "../../relay/backend/name_transforms.h"
 #include "../../runtime/file_utils.h"
 #include "../../support/str_escape.h"
 #include "../func_registry_generator.h"
+#include "../metadata.h"
+#include "../metadata_utils.h"
 #include "codegen_source_base.h"
 
 namespace tvm {
@@ -166,7 +172,7 @@ class CSourceCrtMetadataModuleNode : public runtime::ModuleNode {
 
   std::string GetFormat() { return fmt_; }
   PackedFunc GetFunction(const std::string& name, const ObjectPtr<Object>& sptr_to_self) final {
-    return PackedFunc(nullptr);
+    return PackedFunc();
   }
 
   void SaveToFile(const std::string& file_name, const std::string& format) final {
@@ -518,6 +524,233 @@ class CSourceCrtMetadataModuleNode : public runtime::ModuleNode {
   }
 };
 
+class MetadataSerializer : public AttrVisitor {
+ public:
+  static constexpr const char* kGlobalSymbol = "kTvmgenMetadata";
+  using MetadataKind = ::tvm::runtime::metadata::MetadataKind;
+
+  MetadataSerializer() : is_first_item_{true} {}
+
+  void WriteComma() {
+    if (is_first_item_) {
+      is_first_item_ = false;
+    } else {
+      code_ << ", " << std::endl;
+    }
+  }
+
+  void WriteKey(const char* key) {
+    if (key != nullptr) {
+      code_ << " /* " << key << "*/";
+    }
+  }
+
+  void Visit(const char* key, double* value) final {
+    WriteComma();
+    code_.setf(std::ios::hex | std::ios::showbase | std::ios::fixed | std::ios::scientific,
+               std::ios::basefield | std::ios::showbase | std::ios::floatfield);
+    code_ << *value;
+    WriteKey(key);
+  }
+
+  void Visit(const char* key, int64_t* value) final {
+    WriteComma();
+    code_ << *value << "L";
+    WriteKey(key);
+  }
+
+  void Visit(const char* key, uint64_t* value) final {
+    WriteComma();
+    code_ << *value << "UL";
+    WriteKey(key);
+  }
+  void Visit(const char* key, int* value) final {
+    WriteComma();
+    code_ << *value;
+    WriteKey(key);
+  }
+  void Visit(const char* key, bool* value) final {
+    WriteComma();
+    code_ << *value;
+    WriteKey(key);
+  }
+  void Visit(const char* key, std::string* value) final {
+    WriteComma();
+    code_ << "\"" << *value << "\"";
+    WriteKey(key);
+  }
+  void Visit(const char* key, void** value) final {
+    WriteComma();
+    code_ << *value;
+    WriteKey(key);
+  }
+  void Visit(const char* key, DataType* value) final {
+    WriteComma();
+    code_ << "{" << value->code() << ", " << value->bits() << ", " << value->lanes() << "}";
+    WriteKey(key);
+  }
+
+  void Visit(const char* key, runtime::NDArray* value) final {
+    // TODO(areusch): probably we could consolidate --link-params here, tho...
+    ICHECK(false) << "do not support serializing NDArray as metadata";
+  }
+
+  void VisitArray(runtime::metadata::MetadataArray array) {
+    auto old_is_first_item = is_first_item_;
+    is_first_item_ = true;
+    for (unsigned int i = 0; i < array->array.size(); ++i) {
+      ObjectRef o = array->array[i];
+
+      switch (array->kind) {
+        case MetadataKind::kUint64: {
+          int64_t i = Downcast<Integer>(o);
+          CHECK_GT(i, 0)
+              << "Metadata is of type uint64_t, but array type contains a negative number";
+          uint64_t ui = static_cast<uint64_t>(i);
+          Visit(nullptr, &ui);
+          continue;
+        }
+        case MetadataKind::kInt64: {
+          int64_t i = Downcast<Integer>(o);
+          Visit(nullptr, &i);
+          continue;
+        }
+        case MetadataKind::kBool: {
+          bool b = Downcast<Bool>(o);
+          Visit(nullptr, &b);
+          break;
+        }
+        case MetadataKind::kString: {
+          std::string s = Downcast<String>(o);
+          Visit(nullptr, &s);
+          break;
+        }
+        case MetadataKind::kHandle:
+          CHECK(false) << "Don't know how to serialize handle";
+          break;
+
+        case MetadataKind::kMetadata: {
+          runtime::metadata::MetadataBase metadata = Downcast<runtime::metadata::MetadataBase>(o);
+          std::stringstream i_str;
+          i_str << i;
+          address_.push_back(i_str.str());
+          Visit(nullptr, &metadata);
+          address_.pop_back();
+          break;
+        }
+        default:
+          CHECK(false) << "Unknown MetadataKind for array: " << array->kind;
+          break;
+      }
+      is_first_item_ = false;
+    }
+    is_first_item_ = old_is_first_item;
+  }
+
+  void Visit(const char* key, ObjectRef* value) final {
+    const runtime::metadata::MetadataArrayNode* arr =
+        value->as<runtime::metadata::MetadataArrayNode>();
+    if (arr != nullptr) {
+      WriteComma();
+      if (key != nullptr) {
+        address_.push_back(key);
+      }
+      code_ << metadata::AddressFromParts(address_);
+      if (key != nullptr) {
+        address_.pop_back();
+      }
+      return;
+    }
+
+    runtime::metadata::MetadataBase metadata = Downcast<runtime::metadata::MetadataBase>(*value);
+    if (key != nullptr) {  // NOTE: outermost call passes nullptr key
+      address_.push_back(key);
+    }
+    ReflectionVTable::Global()->VisitAttrs(metadata.operator->(), this);
+    if (key != nullptr) {  // NOTE: outermost call passes nullptr key
+      address_.pop_back();
+    }
+  }
+
+ private:
+  void EmitCType(const runtime::metadata::MetadataArrayNode* arr, std::ostream& os) {
+    switch (arr->kind) {
+      case MetadataKind::kUint64:
+        os << "uint64_t";
+        break;
+      case MetadataKind::kInt64:
+        os << "int64_t";
+        break;
+      case MetadataKind::kBool:
+        os << "bool";
+        break;
+      case MetadataKind::kString:
+        os << "const char*";
+        break;
+      case MetadataKind::kHandle:
+        os << "void*";
+        break;
+      case MetadataKind::kMetadata:
+        os << "struct " << arr->get_element_c_struct_name();
+        break;
+      default:
+        CHECK(false) << "Unknown kind in MetadataArray: " << arr->kind
+                     << " (struct_name=" << arr->get_c_struct_name() << ")";
+        break;
+    }
+  }
+
+ public:
+  void CodegenMetadata(::tvm::runtime::metadata::Metadata metadata) {
+    decl_ << "#include <inttypes.h>" << std::endl
+          << "#include <tvm/runtime/metadata.h>" << std::endl
+          << "#include <tvm/runtime/c_runtime_api.h>" << std::endl;
+    std::vector<metadata::DiscoverArraysVisitor::DiscoveredArray> queue;
+    metadata::DiscoverArraysVisitor array_discover{&queue};
+    array_discover.Visit(metadata::kMetadataGlobalSymbol, &metadata);
+
+    for (auto item : queue) {
+      auto struct_address = std::get<0>(item);
+      address_.push_back(struct_address);
+
+      auto arr = std::get<1>(item);
+
+      // Prepend const with everything except C-string, which needs appending.
+      if (arr->kind != MetadataKind::kString) {
+        code_ << "const ";
+      }
+      EmitCType(arr.operator->(), code_);
+      if (arr->kind == MetadataKind::kString) {
+        code_ << " const";
+      }
+      code_ << " " << struct_address << "[" << arr->array.size() << "] = {" << std::endl;
+      is_first_item_ = true;
+
+      VisitArray(arr);
+      address_.pop_back();
+      code_ << "};" << std::endl;
+    }
+
+    // Finally, emit overall struct.
+    address_.push_back(metadata::kMetadataGlobalSymbol);
+    code_ << "const struct TVMMetadata " << metadata::AddressFromParts(address_) << " = {"
+          << std::endl;
+    Visit(nullptr, &metadata);
+    code_ << "};" << std::endl;
+    address_.pop_back();
+  }
+
+  std::string GetOutput() { return decl_.str() + code_.str(); }
+
+ private:
+  std::vector<std::string> address_;
+  std::stringstream decl_;
+  std::stringstream code_;
+  bool is_first_item_;
+  std::unordered_set<std::string> generated_struct_decls_;
+  std::vector<bool> is_defining_struct_;
+};
+
 runtime::Module CreateCSourceCrtMetadataModule(const Array<runtime::Module>& modules, Target target,
                                                relay::Runtime runtime,
                                                relay::backend::ExecutorCodegenMetadata metadata) {
@@ -537,6 +770,32 @@ runtime::Module CreateCSourceCrtMetadataModule(const Array<runtime::Module>& mod
     csrc_metadata_module.Import(mod);
   }
   return std::move(csrc_metadata_module);
+}
+
+runtime::Module CreateCSourceCppMetadataModule(runtime::metadata::Metadata metadata) {
+  MetadataSerializer serializer;
+  serializer.CodegenMetadata(metadata);
+  std::stringstream lookup_func;
+  lookup_func << "#ifdef __cplusplus\n"
+              << "extern \"C\"\n"
+              << "#endif\n";
+
+  lookup_func << "TVM_DLL int32_t " << ::tvm::runtime::symbol::tvm_get_c_metadata
+              << "(TVMValue* arg_values, int* arg_tcodes, int "
+                 "num_args, TVMValue* ret_values, int* ret_tcodes, void* resource_handle) {"
+              << std::endl;
+  lookup_func << "    ret_values[0].v_handle = (void*) &" << metadata::kMetadataGlobalSymbol << ";"
+              << std::endl;
+  lookup_func << "    ret_tcodes[0] = kTVMOpaqueHandle;" << std::endl;
+  lookup_func << "    return 0;" << std::endl;
+  lookup_func << "};" << std::endl;
+
+  auto mod = MetadataModuleCreate(metadata);
+  std::vector<String> func_names{::tvm::runtime::symbol::tvm_get_c_metadata};
+  auto c = CSourceModuleCreate(serializer.GetOutput() + lookup_func.str(), "c", func_names,
+                               Array<String>());
+  mod->Import(c);
+  return mod;
 }
 
 // supports limited save without cross compile

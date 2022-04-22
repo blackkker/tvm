@@ -292,6 +292,7 @@ int main() {
   const auto* api_v2 = tvm::runtime::Registry::Get("device_api.hexagon.v2");
   ICHECK(api_v2 != nullptr);
   tvm::runtime::Registry::Register("device_api.hexagon", true).set_body(*api_v2);
+  tvm::runtime::Registry::Register("device_api.cpu", true).set_body(*api_v2);
 
   tvm::runtime::hexagon::SimulatorRPCServer server;
 
@@ -311,9 +312,15 @@ int main() {
   return 0;
 }
 
+// Workaround for missing functions in 8.5.08
+extern "C" {
+__attribute__((weak)) void _Get_eh_data() {}
+__attribute__((weak)) void _Parse_fde_instr() {}
+}
+
 TVM_REGISTER_GLOBAL("tvm.hexagon.load_module")
     .set_body([](tvm::runtime::TVMArgs args, tvm::runtime::TVMRetValue* rv) {
       std::string soname = args[0];
       tvm::ObjectPtr<tvm::runtime::Library> n = tvm::runtime::CreateDSOLibraryObject(soname);
-      *rv = CreateModuleFromLibrary(n, tvm::runtime::hexagon::WrapPackedFunc);
+      *rv = CreateModuleFromLibrary(n);
     });
