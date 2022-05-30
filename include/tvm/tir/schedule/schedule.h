@@ -545,6 +545,28 @@ class ScheduleNode : public runtime::Object {
   virtual void TransformLayout(const BlockRV& block_rv, int buffer_index,
                                BufferIndexType buffer_index_type, const IndexMap& index_map) = 0;
 
+  /*!
+   * \brief Apply a transformation represented by IndexMap to block
+   * \details The block iters and the block body are transformed by the given index_map.
+   * Outer loops corresponding to each new block iter are regenerated.
+   * The index_map is required to be bijective affine since we need its inverse mapping.
+   * \param block_rv The block to be transformed
+   * \param index_map The transformation to apply.
+   */
+  virtual void TransformBlockLayout(const BlockRV& block_rv, const IndexMap& index_map) = 0;
+
+  /*!
+   * \brief Set the axis separator of a buffer, where the buffer is specified by a block and a read
+   * or write index
+   * \param block_rv The block that accesses the target buffer.
+   * \param buffer_index The index of the buffer in block's read or write region.
+   * \param buffer_index_type The type of the buffer index, kRead or kWrite.
+   * \param axis_separators The axis separator of the buffer
+   */
+  virtual void SetAxisSeparator(const BlockRV& block_rv, int buffer_index,
+                                BufferIndexType buffer_index_type,
+                                const Array<IntImm>& axis_separators) = 0;
+
   /******** Schedule: Misc ********/
   /*! \brief A no-op that marks the start of postprocessing phase of scheduling */
   virtual void EnterPostproc() = 0;
